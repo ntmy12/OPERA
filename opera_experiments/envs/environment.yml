@@ -1,0 +1,20 @@
+name: opera_env
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - pip:
+    - transformers
+    - accelerate
+    - pillow
+    - pyyaml
+    - tqdm
+    - qwen-vl-utils
+    - flash-attn --no-build-isolation

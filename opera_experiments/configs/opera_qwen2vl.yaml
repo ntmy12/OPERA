@@ -1,0 +1,10 @@
+# OPERA Config for Qwen2-VL-7B-Instruct
+model_name: "qwen2-vl-7b-instruct"
+scale_factor: 50
+threshold: 15
+num_attn_candidates: 5
+penalty_weights: 1.0
+beam_size: 1
+max_new_tokens: 128
+do_sample: false
+seed: 42
