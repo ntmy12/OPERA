@@ -16,21 +16,44 @@ except ImportError:
         return None, None
 
 
+def resolve_dtype(dtype: Optional[Any] = None) -> torch.dtype:
+    """Resolve torch dtype with BF16/FP16 fallback for hardware like T4."""
+    if isinstance(dtype, torch.dtype):
+        return dtype
+    if isinstance(dtype, str):
+        d_lower = dtype.lower()
+        if d_lower in ["bf16", "bfloat16"]:
+            return torch.bfloat16
+        elif d_lower in ["fp16", "float16"]:
+            return torch.float16
+        elif d_lower in ["fp32", "float32"]:
+            return torch.float32
+    if torch.cuda.is_available():
+        if torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+        else:
+            return torch.float16
+    return torch.float32
+
+
 class Qwen2VLWrapper:
     """
-    Wrapper for Qwen2-VL-7B-Instruct to support standard generation and OPERA-augmented generation.
+    Wrapper for Qwen2-VL-7B-Instruct to support standard generation and OPERA-augmented generation
+    with multi-GPU (device_map='auto') and BF16/FP16 precision.
     """
-    def __init__(self, model_path: str, device: str = "cuda:0", dtype: torch.dtype = torch.bfloat16):
+    def __init__(self, model_path: str, device: str = "auto", dtype: Optional[Any] = torch.bfloat16):
         self.device = device
-        self.dtype = dtype
+        self.dtype = resolve_dtype(dtype)
         self.model_path = model_path
+        self.device_map = "auto" if device == "auto" else device
         
-        print(f"Loading Qwen2-VL-7B-Instruct from {model_path}...")
+        print(f"Loading Qwen2-VL-7B-Instruct from {model_path} (dtype={self.dtype}, device_map={self.device_map})...")
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_path,
-            torch_dtype=dtype,
-            device_map=device,
+            torch_dtype=self.dtype,
+            low_cpu_mem_usage=True,
+            device_map=self.device_map,
             attn_implementation="eager"
         )
         self.model.eval()
@@ -58,7 +81,14 @@ class Qwen2VLWrapper:
             return_tensors="pt",
         )
         
-        return {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+        target_device = self.model.device if hasattr(self.model, "device") else (
+            torch.device(self.device) if self.device != "auto" else torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        )
+        return {
+            k: v.to(target_device, dtype=self.dtype if torch.is_floating_point(v) else None) 
+            if isinstance(v, torch.Tensor) else v 
+            for k, v in inputs.items()
+        }
 
     def generate_baseline(self, prompt: str, image, max_new_tokens: int = 128, **kwargs) -> str:
         """
@@ -73,8 +103,10 @@ class Qwen2VLWrapper:
                 **kwargs
             )
             
+        input_ids = inputs["input_ids"]
+        out_sequences = output_ids.sequences if hasattr(output_ids, "sequences") else output_ids
         generated_ids = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, output_ids)
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(input_ids, out_sequences)
         ]
         
         generated_text = self.processor.batch_decode(
@@ -108,8 +140,10 @@ class Qwen2VLWrapper:
                 **kwargs
             )
             
+        input_ids = inputs["input_ids"]
+        out_sequences = output_ids.sequences if hasattr(output_ids, "sequences") else output_ids
         generated_ids = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, output_ids.sequences)
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(input_ids, out_sequences)
         ]
         
         generated_text = self.processor.batch_decode(

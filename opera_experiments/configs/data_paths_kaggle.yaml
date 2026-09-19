@@ -1,0 +1,11 @@
+# Data paths configuration for Kaggle environment (2x NVIDIA T4)
+
+# COCO val2014 images directory (uploaded as Kaggle dataset)
+coco_val2014_images: "/kaggle/input/datasets/biminhco/val2014/val2014"
+
+# POPE annotations directory (bundled in repo under pope_coco)
+pope_coco_annotation_dir: "pope_coco"
+
+# HuggingFace Hub model checkpoints (loaded directly via from_pretrained)
+llava_1_5_7b_ckpt: "llava-hf/llava-1.5-7b-hf"
+qwen2vl_7b_instruct_ckpt: "Qwen/Qwen2-VL-7B-Instruct"

@@ -63,24 +63,26 @@ class RetrospectionAllocator:
         """
         Checks if the attention pattern triggers a rollback.
         Returns True if rollback is needed, False otherwise.
-def register_opera_attention_hooks(model):
+        """
+        if attention_weights.dim() == 4:
+            agg_scores = attention_weights[:, :, -1, :].mean(dim=1)
+            max_agg, _ = agg_scores.max(dim=-1)
+            if (max_agg > self.threshold).any():
+                return True
+        return False
+
+
+def register_opera_attention_hooks(model, logits_processor=None):
     """
     Registers attention hooks for OPERA decoding.
     """
     hooks = []
-    # Mock logic: if maximum attention on any single past token exceeds threshold
-    if attention_weights.dim() == 4:
-        agg_scores = attention_weights[:, :, -1, :].mean(dim=1)
-        max_agg, _ = agg_scores.max(dim=-1)
-        if (max_agg > self.threshold).any():
-            hooks.append(handle)
-            
     return hooks
+
 
 def apply_opera_decoding_hooks(model):
     """
     Utility function to hook OPERA's logic into a model's forward pass
     to capture attention weights.
     """
-    # This will be specifically implemented in wrappers for LLaVA and Qwen2-VL
     pass

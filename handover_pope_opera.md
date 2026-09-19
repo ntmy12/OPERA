@@ -16,9 +16,18 @@
 ## 3. Next Goal: POPE Benchmark
 The User needs to run the **POPE** benchmark for **3 splits** (`adversarial`, `random`, `popular`) using the **OPERA** intervention (`--use_opera` flag).
 
+### POPE Evaluation Conditions & Constraints (BẮT BUỘC):
+- **Max New Tokens:** Set `max_new_tokens = 6` (in `run_pope.py` and generation calls, update from the previous default of 10 to exactly 6).
+- **Decoding Strategy:** Strictly use **Greedy Decoding** (`do_sample=False`, `temperature=0.0`).
+- **Prompt Suffix for QwenVL:** If running QwenVL / Qwen2-VL, the prompt must append the exact suffix: `"Please answer with yes or no."` (e.g. `prompt = f"{question} Please answer with yes or no."`).
+
 ### Tasks for the Next Agent:
-1. **Review `run_pope.py`:** Check `benchmarks/pope/run_pope.py` in the local workspace. Ensure that the generated JSON format correctly outputs the key `"answer"` (or whatever the official POPE evaluation script expects) instead of `"pred"`.
-2. **Bash Script Generation:** Write a `.sh` script that automates the execution of `run_pope.py` for all 3 splits consecutively to save the user from running them manually.
+1. **Review and Update `run_pope.py`:**
+   - Enforce `max_new_tokens = 6`.
+   - Enforce Greedy decoding (`do_sample=False`).
+   - If running with QwenVL, ensure prompt formatting appends `"Please answer with yes or no."`.
+   - Ensure the generated JSON outputs the correct key expected by POPE evaluation scripts (`"answer"` vs `"pred"`).
+2. **Bash Script Generation:** Write a `.sh` script that automates the execution of `run_pope.py` for all 3 splits consecutively with `--max_new_tokens 6` and Greedy decoding.
 3. **Execution Instructions:** Provide the user with the exact commands to run the POPE benchmark and the corresponding evaluation script (`pope_eval.py` or similar).
 
 ## 4. Antigravity Remote Access Note
