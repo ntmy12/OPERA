@@ -3,6 +3,7 @@ import json
 import yaml
 import argparse
 import random
+import time
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -154,7 +155,8 @@ def run_pope_split(
     use_opera: bool,
     opera_config: Dict[str, Any],
     max_new_tokens: int = 6,
-    model_name: str = "llava"
+    model_name: str = "llava",
+    max_samples: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Run POPE benchmark for a single split.
@@ -166,12 +168,17 @@ def run_pope_split(
     with open(pope_anno_file, 'r', encoding='utf-8') as f:
         pope_data = [json.loads(line) for line in f if line.strip()]
 
+    if max_samples is not None and max_samples > 0:
+        pope_data = pope_data[:max_samples]
+        print(f"     [Sampling] Subsampled to first {len(pope_data)} samples for split '{split}'")
+
     os.makedirs(output_dir, exist_ok=True)
     out_file = os.path.join(output_dir, "raw_outputs.jsonl")
 
     print(f"\n---> Starting POPE Split: '{split}' ({len(pope_data)} questions) | Model: {model_name} | OPERA: {use_opera}")
     print(f"     Max New Tokens: {max_new_tokens} | Decoding: Greedy (do_sample=False, temp=0.0)")
 
+    sample_latencies = []
     with open(out_file, 'w', encoding='utf-8') as f_out:
         for idx, item in enumerate(tqdm(pope_data, desc=f"POPE {split} [{model_name}]")):
             image_name = item['image']
@@ -186,6 +193,11 @@ def run_pope_split(
             except Exception as e:
                 print(f"Warning: Failed to load image {image_path}: {e}")
                 continue
+
+            # Synchronize CUDA to measure precise inference latency per sample
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t_start = time.perf_counter()
 
             # Greedy generation: do_sample=False, temperature=0.0, max_new_tokens=6
             if use_opera:
@@ -206,6 +218,12 @@ def run_pope_split(
                     temperature=0.0
                 )
 
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t_end = time.perf_counter()
+            latency = t_end - t_start
+            sample_latencies.append(latency)
+
             # Record standard and compatible keys
             result = {
                 "question_id": item.get('question_id', idx),
@@ -216,27 +234,41 @@ def run_pope_split(
                 "pred": pred,
                 "answer": pred,
                 "text": pred,
+                "latency_s": round(latency, 4)
             }
             f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
             f_out.flush()
 
+    total_split_time = sum(sample_latencies)
+    avg_split_time = (total_split_time / len(sample_latencies)) if sample_latencies else 0.0
+
     print(f"Finished split '{split}'. Raw outputs saved to: {out_file}")
+    print(f"⏱️ Split '{split}' Timing: {len(sample_latencies)} samples | Total: {total_split_time:.2f}s | Avg: {avg_split_time:.4f}s/sample")
 
     # Immediately evaluate this split
     metrics = eval_pope(out_file)
+    metrics["avg_time_per_sample_s"] = round(avg_split_time, 4)
+    metrics["total_inference_time_s"] = round(total_split_time, 4)
+    metrics["num_evaluated"] = len(sample_latencies)
+
     metrics_path = os.path.join(output_dir, "metrics.json")
     with open(metrics_path, 'w', encoding='utf-8') as f:
         json.dump(metrics, f, indent=4)
-    print(f"Evaluated split '{split}': Accuracy={metrics['Accuracy']}%, F1={metrics['F1']}%, Yes-ratio={metrics['Yes_ratio']}%")
+    print(f"Evaluated split '{split}': Accuracy={metrics['Accuracy']}%, F1={metrics['F1']}%, Avg Time/Sample={metrics['avg_time_per_sample_s']}s")
 
     return metrics
 
 
-def print_summary_table(all_metrics: Dict[str, Dict[str, Any]], model_name: str, mode: str):
-    """Print an aesthetic summary table of benchmark results across all splits."""
+def print_summary_table(
+    all_metrics: Dict[str, Dict[str, Any]],
+    model_name: str,
+    mode: str,
+    overall_metrics: Optional[Dict[str, Any]] = None
+):
+    """Print an aesthetic summary table of benchmark results and timing across all splits."""
     col_split = 14
     col_metric = 10
-    total_width = col_split + (col_metric * 6) + 20
+    col_time = 18
     
     header = (
         f"{'Split':<{col_split}} | "
@@ -245,23 +277,29 @@ def print_summary_table(all_metrics: Dict[str, Dict[str, Any]], model_name: str,
         f"{'Recall':>{col_metric}} | "
         f"{'F1-Score':>{col_metric}} | "
         f"{'Yes-Ratio':>{col_metric}} | "
-        f"{'Unknowns':>{col_metric}}"
+        f"{'Unknowns':>{col_metric}} | "
+        f"{'Avg Time/Sample':>{col_time}}"
     )
     sep = "=" * len(header)
     dash_sep = "-" * len(header)
 
     print("\n" + sep)
-    print(f"   POPE BENCHMARK SUMMARY TABLE | Model: {model_name} | Mode: {mode.upper()}")
+    print(f"   POPE BENCHMARK SUMMARY TABLE | Model: {model_name.upper()} | Mode: {mode.upper()}")
     print(sep)
     print(header)
     print(dash_sep)
-    for split, m in all_metrics.items():
+    for split in ["random", "popular", "adversarial"]:
+        if split not in all_metrics:
+            continue
+        m = all_metrics[split]
         acc = f"{m.get('Accuracy', 0):.2f}%"
         prec = f"{m.get('Precision', 0):.2f}%"
         rec = f"{m.get('Recall', 0):.2f}%"
         f1 = f"{m.get('F1', 0):.2f}%"
         yes_r = f"{m.get('Yes_ratio', 0):.2f}%"
         unk = str(m.get('Unknown_answers', 0))
+        avg_t = m.get('avg_time_per_sample_s', None)
+        time_str = f"{avg_t:.4f} s" if avg_t is not None else "N/A"
         print(
             f"{split:<{col_split}} | "
             f"{acc:>{col_metric}} | "
@@ -269,8 +307,15 @@ def print_summary_table(all_metrics: Dict[str, Dict[str, Any]], model_name: str,
             f"{rec:>{col_metric}} | "
             f"{f1:>{col_metric}} | "
             f"{yes_r:>{col_metric}} | "
-            f"{unk:>{col_metric}}"
+            f"{unk:>{col_metric}} | "
+            f"{time_str:>{col_time}}"
         )
+    print(dash_sep)
+    if overall_metrics:
+        tot_s = overall_metrics.get("total_samples", 0)
+        tot_t = overall_metrics.get("total_inference_time_s", 0.0)
+        avg_s = overall_metrics.get("overall_avg_time_per_sample_s", 0.0)
+        print(f"⏱️ OVERALL TIMING ({tot_s} samples): Total Inference Time = {tot_t:.2f}s | Average Time / Sample = {avg_s:.4f}s")
     print(sep + "\n")
 
 
@@ -282,6 +327,8 @@ if __name__ == "__main__":
                         help="Enable OPERA hallucination mitigation")
     parser.add_argument("--split", type=str, choices=["random", "popular", "adversarial", "all"], default="all",
                         help="POPE split to evaluate, or 'all' to run all 3 splits sequentially")
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="Maximum number of samples to evaluate per split (e.g. 10 for latency profiling)")
     parser.add_argument("--max_new_tokens", type=int, default=6,
                         help="Max new tokens to generate (enforced 6 for POPE)")
     parser.add_argument("--coco_dir", type=str, default=None,
@@ -378,6 +425,7 @@ if __name__ == "__main__":
             "model_ckpt": model_ckpt,
             "use_opera": args.use_opera,
             "split": current_split,
+            "max_samples": args.max_samples,
             "max_new_tokens": args.max_new_tokens,
             "do_sample": False,
             "temperature": 0.0,
@@ -407,15 +455,31 @@ if __name__ == "__main__":
             use_opera=args.use_opera,
             opera_config=opera_config,
             max_new_tokens=args.max_new_tokens,
-            model_name=args.model
+            model_name=args.model,
+            max_samples=args.max_samples
         )
         all_metrics[current_split] = metrics
 
-    # 8. Save overall summary and print table
+    # 8. Save overall summary with timing and print table
+    total_samples_all = sum(m.get("num_evaluated", m.get("Total", 0)) for m in all_metrics.values())
+    total_time_all = sum(m.get("total_inference_time_s", 0.0) for m in all_metrics.values())
+    overall_avg_time = (total_time_all / total_samples_all) if total_samples_all > 0 else 0.0
+
+    overall_metrics = {
+        "total_samples": total_samples_all,
+        "total_inference_time_s": round(total_time_all, 4),
+        "overall_avg_time_per_sample_s": round(overall_avg_time, 4),
+    }
+
+    summary_data = {
+        **all_metrics,
+        "overall": overall_metrics
+    }
+
     summary_path = os.path.join(base_output_dir, "summary_metrics.json")
     with open(summary_path, 'w', encoding='utf-8') as f:
-        json.dump(all_metrics, f, indent=4)
+        json.dump(summary_data, f, indent=4)
 
-    print_summary_table(all_metrics, model_name=args.model, mode=mode)
+    print_summary_table(all_metrics, model_name=args.model, mode=mode, overall_metrics=overall_metrics)
     print(f"All benchmarks finished successfully! Results saved in: {base_output_dir}\n")
 
